@@ -2,23 +2,36 @@
 
 #SBATCH -N 1
 #SBATCH -c 64
-#SBATCH -t 03:00:00
+#SBATCH -t 02:00:00
 #SBATCH -p gen
 #SBATCH --constraint="genoa"
 #SBATCH --mem=8G
 #SBATCH --export=ALL
-#SBATCH -J test-opt
+#SBATCH -J test-build
 #SBATCH --no-requeue
+
+if [ "$#" -eq 0 ]; then
+    echo "Please provide an TEST ID!"
+   exit 
+else
+    export TEST_ID=$1
+fi
+
+echo $TEST_ID
+echo "......."
 
 
 # set SLURM options (used for all sbatch calls)
 export CLEANUP_OPTIONS="--partition=gen --constraint=genoa --mem=4G --ntasks-per-node=1"
 export MY_SLURM_OPTIONS="--partition=gen --constraint=genoa --mem=15G"
+export STAR_OPTIONS="--partition=gen --constraint=genoa --mem=15G --time=3:00:00"
 
 # set other relevant MESA options
-export MESA_RUN_OPTIONAL=t
-unset MESA_SKIP_OPTIONAL
+#export MESA_RUN_OPTIONAL=t
 #export MESA_FPE_CHECKS_ON=1
+
+# make sure this is on by default for when we update to using this instead of MESA_RUN_OPTIONAL
+export MESA_SKIP_OPTIONAL=t
 
 # set paths for OP opacities
 #export MESA_OP_MONO_DATA_PATH=${DATA_DIR}/OP4STARS_1.3/mono
@@ -68,7 +81,7 @@ echo $VERSION
 
 
 # Limit number of mesa's being tested at once
-while [[ $(ls -d "${MESA_TMP}"/tmp.* | wc -l) -gt 20 ]];
+while [[ $(ls -d "${MESA_TMP}"/tmp.* | wc -l) -gt 30 ]];
 do
 	echo "Too many tests in progress sleeping"
 	date
@@ -93,6 +106,8 @@ which git-lfs
 mesa_test install -c --mesadir=$MESA_DIR $VERSION
 mesa_test submit -e --mesadir=$MESA_DIR
 
+echo "submitted empty mesa test at: $MESA_DIR"
+
 
 if ! grep -q "MESA installation was successful" "$MESA_DIR/build.log" ; then
 	echo "Checkout failed"
@@ -104,16 +119,40 @@ cd "${MESA_DIR}" || exit
 
 # Look for tests to be skipped
 export skip_tests=0
+if [[ $(git log -1) == *'[ci skip]'* ]];then
+    export skip_tests=1
+fi
+
 export split_tests=0
+if [[ $(git log -1) == *'[ci split]'* ]];then
+    export split_tests=1
+fi
+
+if [[ $(git log -1) == *'[ci optional'* ]];then
+    export MESA_RUN_OPTIONAL=t
+    unset MESA_SKIP_OPTIONAL
+    export STAR_OPTIONS="--partition --constraint=genoa --mem=15G --time=12:00:00"
+fi
+
+if [[ $(git log -1) == *'[ci converge]'* ]];then
+    export MESA_TEST_SUITE_RESOLUTION_FACTOR=0.8
+    export STAR_OPTIONS="--partition=gen --constraint=genoa --mem=15G --time=12:00:00"
+fi
 
 if [[ $(git log -1) == *'[ci fpe]'* ]];then
     export MESA_FPE_CHECKS_ON=1
 fi
 
+# if ci skip, then exit and don't submit any further tests
+if [[ $skip_tests -eq 1 ]];then
+    rm -rf $MESA_DIR
+    exit 0
+fi
+
 # if USE_MESA_TEST is set, use mesa_test gem; pick its options via MESA_TEST_OPTIONS
 # otherwise, use built-in each_test_run script
 export USE_MESA_TEST=t
-export MESA_TEST_OPTIONS="--force --mesadir=${MESA_DIR} --force-logs" # --no-submit"
+export MESA_TEST_OPTIONS="--force --mesadir=${MESA_DIR}" # --no-submit"
 
 # function to clean caches; executed at start of each job
 clean_caches(){
@@ -133,65 +172,26 @@ cd $MESA_SCRIPTS
 # run the star test suite
 # this is part is parallelized, so get the number of tests
 cd ${MESA_DIR}/star/test_suite
-export NTESTS=$(./count_tests)
+export NTESTS=1  #   $(./count_tests)
 cd -
 
 if [[ $NTESTS -gt 0 ]]; then
-    if [[ $split_tests -eq 1 ]];then
-	half=$((NTESTS/2))
-	export STAR_JOBID=$(sbatch --parsable \
+	    # just submit all the tests for 16 cores
+	    export OMP_NUM_THREADS=64
+	    export STAR_JOBID=$(sbatch --parsable \
                                --ntasks-per-node=${OMP_NUM_THREADS} \
-                               --array=1-${half} \
+                               --array=${TEST_ID} \
                                --output="${OUT_FOLD}/star.log-%a" \
                                --mail-user=${MY_EMAIL_ADDRESS} \
-                               ${MY_SLURM_OPTIONS} \
-                               star_optional.sh)
-    else
-	export STAR_JOBID=$(sbatch --parsable \
-                               --ntasks-per-node=${OMP_NUM_THREADS} \
-                               --array=1-${NTESTS} \
-                               --output="${OUT_FOLD}/star.log-%a" \
-                               --mail-user=${MY_EMAIL_ADDRESS} \
-                               ${MY_SLURM_OPTIONS} \
-                               star_optional.sh)
+                               ${STAR_OPTIONS} \
+                               star.sh)
+	    export OMP_NUM_THREADS=64
+	    depend=afterany:$STAR_JOBID
+	fi
     fi
-    depend=afterany:$STAR_JOBID
-fi
-
-# run the binary test suite
-# this is part is parallelized, so get the number of tests
-cd ${MESA_DIR}/binary/test_suite
-export NTESTS=$(./count_tests)
-cd -
-
-if [[ $NTESTS -gt 0 ]]; then
-    export BINARY_JOBID=$(sbatch --parsable \
-                                 --ntasks-per-node=${OMP_NUM_THREADS} \
-                                 --array=1-${NTESTS} \
-                                 --output="${OUT_FOLD}/binary.log-%a" \
-                                 --mail-user=${MY_EMAIL_ADDRESS} \
-                                 ${MY_SLURM_OPTIONS} \
-                                 binary.sh)
-    depend=${depend},afterany:$BINARY_JOBID
 fi
 
 
-# run the astero test suite
-# this is part is parallelized, so get the number of tests
-cd ${MESA_DIR}/astero/test_suite
-export NTESTS=$(./count_tests)
-cd -
-
-if [[ $NTESTS -gt 0 ]]; then
-    export ASTERO_JOBID=$(sbatch --parsable \
-                                 --ntasks-per-node=${OMP_NUM_THREADS} \
-                                 --array=1-${NTESTS} \
-                                 --output="${OUT_FOLD}/astero.log-%a" \
-                                 --mail-user=${MY_EMAIL_ADDRESS} \
-                                 ${MY_SLURM_OPTIONS} \
-                                 astero.sh)
-    depend=${depend},afterany:$ASTERO_JOBID
-fi
 
 echo "Dependencies for cleanup:"
 echo $depend

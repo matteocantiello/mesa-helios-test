@@ -1,0 +1,4 @@
+*/5 * * * * $HOME/mesa-helios-test/launch.sh
+*/5 * * * * $HOME/mesa-helios-test/clean_ceph.sh
+02 02 * * * $HOME/mesa-helios-test/runOptional.sh
+

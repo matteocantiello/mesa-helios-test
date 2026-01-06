@@ -34,6 +34,7 @@ fi
 
 # find the latest commit on main
 i=$(git log -1 --remotes=*main --format="%h")
+i=$(git log -1 --format="%h")
 export OUT_FOLD=$MESA_LOG/optional_$i
 echo $OUT_FOLD
 
