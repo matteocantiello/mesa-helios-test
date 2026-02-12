@@ -61,7 +61,7 @@ echo "**********"
 source mesa_test.sh
 
 # set email address for SLURM and for cleanup output
-export MY_EMAIL_ADDRESS=pmocz@flatironinstitute.org
+export MY_EMAIL_ADDRESS=mcantiello@flatironinstitute.org
 
 # set how many threads; this will also be sent to SLURM as --ntasks-per-node
 export OMP_NUM_THREADS=64
